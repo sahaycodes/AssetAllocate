@@ -1,0 +1,331 @@
+from flask import Flask, request, jsonify
+import yfinance as yf
+from pandas_datareader import data as web
+import pandas as pd
+import numpy as np
+import re
+from sklearn.cluster import KMeans
+from sklearn.neighbors import KNeighborsClassifier
+import plotly.express as px
+from datetime import datetime
+import math
+
+app = Flask(__name__)
+
+
+def get_data(assets,start_date):
+    df = pd.DataFrame()
+    yf.pdr_override()
+    end_date = datetime.now()
+    for stock in assets:
+        df[stock] = yf.download(stock, start=start_date, end=end_date.strftime('%Y-%m-%d'), interval='1d')['Adj Close']
+    return df
+
+def optimize_portfolio(df):
+    num_of_portfolios = 6000
+    sim_df = monte_carlo_simulation(df, num_of_portfolios)
+    print(sim_df.head(1),sim_df.keys())
+    sim_df['Volatility'] = sim_df['Volatility'].round(2)
+    idx = sim_df.groupby('Volatility')['Returns'].idxmax()
+    max_df = sim_df.loc[idx].reset_index(drop=True)
+    max_df = max_df.sort_values(by='Volatility').reset_index(drop=True)
+    max_df['Weights'] = max_df['Weights'].apply(lambda x: {col: weight for col, weight in zip(df.columns, x)})
+    max_df = max_df.to_dict(orient='records')
+
+    # Selecting the portfolio with the highest Sharpe Ratio
+    max_returns = sim_df.loc[sim_df['Returns'].idxmax()]
+    optimal_weights = max_returns['Weights']
+    print(optimal_weights)
+    print(df.columns)
+    # Creating DataFrame for weights
+    weights_df = pd.DataFrame(optimal_weights, index=df.columns, columns=['Weights'])
+
+    # Expected annual return, volatility, and Sharpe ratio
+    mean_returns = df.pct_change(fill_method=None).mean()
+    cov_matrix = df.pct_change(fill_method=None).cov() * 252
+    annual_return = np.sum(mean_returns * optimal_weights) * 252
+    port_variance = np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights))
+    port_volatility = np.sqrt(port_variance)
+    sharpe_ratio = (annual_return - 0.02) / port_volatility
+    # print("done")
+    return weights_df, annual_return, port_volatility, sharpe_ratio, max_df
+
+def monte_carlo_simulation(df, num_portfolios=100, risk_free_rate=0.02):
+    returns = df.pct_change(fill_method=None).dropna()
+    mean_returns = returns.mean()
+    cov_matrix = returns.cov()
+    results = np.zeros((4, num_portfolios))
+    weights_record = []
+
+    for i in range(num_portfolios):
+        weights = np.random.random(len(df.columns))
+        weights /= np.sum(weights)
+        weights_record.append(weights)
+
+        portfolio_return = np.sum(mean_returns * weights) * 252
+        portfolio_std_dev = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))) * np.sqrt(252)
+
+        results[0, i] = portfolio_return * 100
+        results[1, i] = portfolio_std_dev
+        results[2, i] = (portfolio_return - risk_free_rate) / portfolio_std_dev  # Sharpe Ratio
+
+    results[3] = np.arange(1, num_portfolios + 1)
+    sim_df = pd.DataFrame(results.T, columns=['Returns', 'Volatility', 'Sharpe Ratio', 'Portfolio'])
+    sim_df['Weights'] = weights_record
+
+    return sim_df
+
+
+def allocation_strategy(centroids, age, min_age=18, max_age=65):
+    underage=0
+    overage=0
+    if age<18:
+        underage = 1
+        age = 18
+    if age>65:
+        overage = 1
+        age = 65
+    # Define risk categories based on the centroids
+    high_risk_centroid = centroids[2]
+    medium_risk_centroid = centroids[1]
+    low_risk_centroid = centroids[0]
+
+    # Normalize age range
+    age_range = max_age - min_age
+    normalized_age = (age - min_age) / age_range
+
+    # Calculate allocation weights based on age
+    high_risk_weight = 1 - normalized_age
+    medium_risk_weight = 0.5 * (1 - np.abs(normalized_age - 0.5))
+    low_risk_weight = normalized_age
+
+    # Ensure weights sum up to 1
+    total_weights = high_risk_weight + medium_risk_weight + low_risk_weight
+    high_risk_weight /= total_weights
+    medium_risk_weight /= total_weights
+    low_risk_weight /= total_weights
+
+    # Return allocation weights
+    return high_risk_weight, medium_risk_weight, low_risk_weight , underage, overage
+
+@app.route('/portfolio', methods=['POST'])
+def optimise_port():
+    data = request.json
+    ticker = str(data['Symbols'])
+    ticker = remove_spaces(ticker)
+    assets = ticker.split(',')
+    df = get_data(assets)
+    sim_no = data.get('sim_no', 10000)
+
+    # Monte Carlo Simulation
+    num_of_portfolios = sim_no
+    sim_df = monte_carlo_simulation(df, num_of_portfolios)
+    sim_df['Volatility'] = sim_df['Volatility'].round(2)
+    idx = sim_df.groupby('Volatility')['Returns'].idxmax()
+    max_df = sim_df.loc[idx].reset_index(drop=True)
+    max_df = max_df.sort_values(by='Volatility').reset_index(drop=True)
+    max_df['Weights'] = max_df['Weights'].apply(lambda x: {col: weight for col, weight in zip(df.columns, x)})
+    max_df = max_df.to_dict(orient='records')
+
+    # Selecting the portfolio with the highest Sharpe Ratio
+    max_returns = sim_df.loc[sim_df['Returns'].idxmax()]
+    optimal_weights = max_returns['Weights']
+
+    # Creating DataFrame for weights
+    weights_df = pd.DataFrame(optimal_weights, index=df.columns, columns=['Weights'])
+    weights_dict = weights_df.to_dict()
+
+    # Expected annual return, volatility, and Sharpe ratio
+    mean_returns = df.pct_change(fill_method=None).mean()
+    cov_matrix = df.pct_change(fill_method=None).cov() * 252
+    annual_return = np.sum(mean_returns * optimal_weights) * 252
+    port_variance = np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights))
+    port_volatility = np.sqrt(port_variance)
+    sharpe_ratio = (annual_return - 0.02) / port_volatility
+
+    return jsonify({
+        "weights_df": weights_dict,
+        "annual_return": annual_return * 100,
+        "port_volatility": port_volatility,
+        "sharpe_ratio": sharpe_ratio,
+        "array_of_allocation": max_df
+    })
+
+
+
+
+
+def plot_chart(df, title):
+    fig = px.line(df, title=title)
+    return fig
+
+
+def gaussian_pdf(x, mean, std):
+    return (1 / (std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x - mean) / std) ** 2)
+
+
+def euclidean_distance(point, centroid):
+    return np.sqrt(np.sum((point - centroid) ** 2))
+
+
+def calculate_probabilities(user_point, centroids):
+    distances = np.array([euclidean_distance(user_point, centroid) for centroid in centroids])
+    std = np.std(distances)
+    probabilities = np.array([gaussian_pdf(dist, 0, std) for dist in distances])
+    normalized_probabilities = probabilities / np.sum(probabilities)
+    return normalized_probabilities
+
+
+def remove_spaces(text):
+    return re.sub(r'\s+', '', text)
+
+
+@app.route('/optimize', methods=['POST'])
+def optimize():
+    data = request.json
+    lifestyle_risk = data['lifestyle_risk']
+    expected_annual_roi = data['expected_annual_roi']
+    age = data['current_age']
+    principal_amount = data['principal_amount']
+    if data["risk"] == 0:
+        return jsonify("error code value 0")
+
+    centroids = np.array([[8.47589795, 0.01583604],
+                          [107.31055752, 0.05353579],
+                          [15.56913836, 0.01750048]
+                         ])
+
+    if lifestyle_risk == 0:
+        expected_volatility = centroids[0][1]
+    elif lifestyle_risk == 1:
+        expected_volatility = centroids[2][1]
+    elif lifestyle_risk == 2:
+        expected_volatility = centroids[1][1]
+    else:
+        return jsonify({"error": "Invalid lifestyle risk value"})
+
+
+    probability_input = np.array([[expected_annual_roi, expected_volatility]])
+    probabilities = calculate_probabilities(probability_input, centroids)
+    print(probabilities)
+    weighted_amounts =  probabilities * principal_amount
+    risk_based_weights = pd.DataFrame({'Weight': weighted_amounts})
+    high_risk_weight, medium_risk_weight, low_risk_weight, underage, overage = allocation_strategy(centroids, age)
+
+    dataframe = [
+        {"weights": low_risk_weight * principal_amount},
+        {"weights":high_risk_weight * principal_amount},
+        {"weights":medium_risk_weight * principal_amount}
+    ]
+    age_based_weights = pd.DataFrame(dataframe)
+    clusters_data = {
+        "Symbols": [
+            "GC=F,SI=F",
+            "BTC-USD,ETH-USD,SOL-USD, MATIC-USD",
+            "HDFCBANK.NS,ICICIBANK.NS,RELIANCE.NS,TATAPOWER.NS,TATAMOTORS.NS,TCS.NS,INFY.NS,HINDUNILVR.NS,LT.NS,APOLLOHOSP.NS"
+        ],
+        "Underage_Flag": underage,
+        "Overage_Flag": overage
+    }
+    # clusters_data["age_based_weights"]= age_based_weights["weights"]
+    # clusters_data['W_risk'] = risk_based_weights['Weight']
+    n =math.exp(10-data["risk"])
+    clusters_data["Weights"] = (( n * age_based_weights["weights"]) + (1 * np.array(risk_based_weights["Weight"])))/( n + 1)
+    clusters_df = pd.DataFrame(clusters_data)
+    results = []
+
+    for index, row in clusters_df.iterrows():
+
+        ticker = str(row['Symbols'])
+        ticker = remove_spaces(ticker)
+        assets = ticker.split(',')
+        if index == 0:
+            df = get_data(assets,'2005-01-01')
+        elif index == 1:
+            df = get_data(assets,'2021-06-01')
+        elif index == 2:
+            df = get_data(assets,'2014-01-01')
+
+        # print(df)
+        # print(ticker)
+        starting_amount = row['Weights']
+        weights_allocated, annual_return, port_volatility, sharpe_ratio, max_df = optimize_portfolio(df)
+        print(weights_allocated)
+        # print("1")
+        # print(weights_allocated)
+        del df
+        # print("hi this is max df",max_df)
+        # print(weights_df)
+        # print(annual_return)
+        # print(port_volatility)
+        # print("2")
+        results.append({
+            "Symbols": row['Symbols'],
+            "Weights": weights_allocated.to_dict(),
+            "Annual Return": annual_return * 100,
+            "Volatility": port_volatility,
+            "Sharpe Ratio": sharpe_ratio,
+            "Array_of_allocations": max_df
+        })
+        # print("3")
+    # print(type(results))
+    return jsonify({"results": results, "clusters": clusters_df.to_dict(orient='records')})
+
+
+@app.route('/weights', methods=['POST'])
+def weights():
+    data = request.json
+    lifestyle_risk = data['lifestyle_risk']
+    expected_annual_roi = data['expected_annual_roi']
+    age = data['current_age']
+    principal_amount = data['principal_amount']
+    if data["risk"] == 0:
+        return jsonify("error code value 0")
+
+    centroids = np.array([[8.47589795, 0.01583604],
+                          [107.31055752, 0.05353579],
+                          [15.56913836, 0.01750048]
+                         ])
+
+    if lifestyle_risk == 0:
+        expected_volatility = centroids[0][1]
+    elif lifestyle_risk == 1:
+        expected_volatility = centroids[2][1]
+    elif lifestyle_risk == 2:
+        expected_volatility = centroids[1][1]
+    else:
+        return jsonify({"error": "Invalid lifestyle risk value"})
+
+
+    probability_input = np.array([[expected_annual_roi, expected_volatility]])
+    probabilities = calculate_probabilities(probability_input, centroids)
+    print(probabilities)
+    weighted_amounts =  probabilities * principal_amount
+    risk_based_weights = pd.DataFrame({'Weight': weighted_amounts})
+    high_risk_weight, medium_risk_weight, low_risk_weight, underage, overage = allocation_strategy(centroids, age)
+
+    dataframe = [
+        {"weights": low_risk_weight * principal_amount},
+        {"weights":high_risk_weight * principal_amount},
+        {"weights":medium_risk_weight * principal_amount}
+    ]
+    age_based_weights = pd.DataFrame(dataframe)
+    clusters_data = {
+        "Symbols": [
+            "GC=F,SI=F",
+            "BTC-USD,ETH-USD,SOL-USD, MATIC-USD",
+            "HDFCBANK.NS,ICICIBANK.NS,RELIANCE.NS,TATAPOWER.NS,TATAMOTORS.NS,TCS.NS,INFY.NS,HINDUNILVR.NS,LT.NS,APOLLOHOSP.NS"
+        ],
+        "Underage_Flag": underage,
+        "Overage_Flag": overage
+    }
+    # clusters_data["age_based_weights"]= age_based_weights["weights"]
+    # clusters_data['W_risk'] = risk_based_weights['Weight']
+    n =math.exp(10-data["risk"])
+    clusters_data["Weights"] = (( n * age_based_weights["weights"]) + (1 * np.array(risk_based_weights["Weight"])))/( n + 1)
+    clusters_df = pd.DataFrame(clusters_data)
+    return jsonify({"clusters": clusters_df.to_dict(orient='records')})
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
