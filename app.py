@@ -161,7 +161,7 @@ def optimise_port():
     ticker = remove_spaces(ticker)
     assets = ticker.split(',')
     df = get_data(assets)
-    sim_no = data.get('sim_no', 10000)
+    sim_no = data.get('sim_no', 1000)
 
     # Monte Carlo Simulation
     num_of_portfolios = sim_no
