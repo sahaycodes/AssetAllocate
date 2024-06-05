@@ -6,62 +6,17 @@ import re
 import plotly.express as px
 from datetime import datetime
 import math
-import os 
-import pickle
 
 app = Flask(__name__)
 
-PICKLE_FILE = 'data.pkl'
 
-def save_data_to_pickle(data, file_name):
-    try:
-        with open(file_name, 'wb') as f:
-            pickle.dump(data, f)
-        print(f"Data successfully saved to {file_name}")
-    except Exception as e:
-        print(f"Error saving data to pickle: {e}")
-
-def load_data_from_pickle(file_name):
-    try:
-        with open(file_name, 'rb') as f:
-            data = pickle.load(f)
-        print(f"Data successfully loaded from {file_name}")
-        return data
-    except Exception as e:
-        print(f"Error loading data from pickle: {e}")
-        return None
-
-def get_data(tickers, start_date='2014-01-01'):
-    try:
-        data = yf.download(tickers, start=start_date)['Adj Close']
-        print("Data successfully fetched from yfinance")
-        return data
-    except Exception as e:
-        print(f"Error fetching data from yfinance: {e}")
-        return None
-
-def load_or_fetch_data(assets, start_date='2014-01-01'):
-    #
-    #Load data from a pickle file if available and up-to-date.
-    #Fetch from yfinance if the data is missing or needs to be updated.
-    #"""
-    if os.path.exists(PICKLE_FILE):
-        print("Loading data from pickle file...")
-        data = load_data_from_pickle(PICKLE_FILE)
-        if data is not None:
-            # Check if all requested assets are present
-            missing_assets = [asset for asset in assets if asset not in data.columns]
-            if not missing_assets:
-                print("All requested assets are present in the pickle file.")
-                return data
-            else:
-                print(f"Missing assets in pickle file: {missing_assets}")
-
-    print("Fetching data from yfinance...")
-    data = get_data(assets, start_date)
-    if data is not None:
-        save_data_to_pickle(data, PICKLE_FILE)
-    return data        
+def get_data(assets,start_date='2014-01-01'):
+    df = pd.DataFrame()
+    yf.pdr_override()
+    end_date = datetime.now()
+    for stock in assets:
+        df[stock] = yf.download(stock, start=start_date, end=end_date.strftime('%Y-%m-%d'), interval='1d')['Adj Close']
+    return df
 
 def optimize_portfolio(df,tickers):
     num_of_portfolios = 5000
@@ -91,10 +46,10 @@ def optimize_portfolio(df,tickers):
     # print("done")
     return weights_df, annual_return, port_volatility, sharpe_ratio, max_df
 
-def monteCarlo(df,assets,num_of_portfolios=10000):
+def monteCarlo(df,assets,num_of_portfolios=100):
     log_returns = np.log(1 + df.pct_change())
 
-    all_weights = np.zeros((num_of_portfolios, len(assets)))
+    monte_df = all_weights = np.zeros((num_of_portfolios, len(assets)))
 
     ret_arr = np.zeros(num_of_portfolios)
     vol_arr = np.zeros(num_of_portfolios)
@@ -102,7 +57,7 @@ def monteCarlo(df,assets,num_of_portfolios=10000):
 
     for i in range(num_of_portfolios):
         monte_weights = np.random.random(len(assets))
-        monte_weights /=  np.sum(monte_weights)
+        monte_weights = monte_weights / np.sum(monte_weights)
 
         all_weights[i, :] = monte_weights
 
