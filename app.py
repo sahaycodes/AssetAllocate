@@ -279,7 +279,7 @@ def weights():
     expected_annual_roi = data['expected_annual_roi']
     age = data['current_age']
     principal_amount = data['principal_amount']
-    if data["risk"] == 0:
+    if data["risk"] == 0 or data["risk"]<0 or data["risk"]>10:
         return jsonify("error code value 0")
 
     centroids = np.array([[8.47589795, 0.01583604],
