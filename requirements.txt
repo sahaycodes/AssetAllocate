@@ -8,3 +8,4 @@ gunicorn == 20.1.0
 waitress == 3.0.0
 threadpoolctl == 3.5.0
 pyportfolioopt==1.5.5
+Flask-Caching ==2.3.0
