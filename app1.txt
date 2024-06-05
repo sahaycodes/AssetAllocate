@@ -7,17 +7,14 @@ import plotly.express as px
 from datetime import datetime
 import math
 import os 
-from flask_caching import Cache
+import pickle
 
 app = Flask(__name__)
 
-cache=Cache(app, config={'CACHE_TYPE':'SimpleCache'})
+PICKLE_FILE = 'data.pkl'
+data_fetched = False #global variable to track data has been fetched from yfinance or not 
 
-
-#PICKLE_FILE = 'data.pkl'
-#data_fetched = False #global variable to track data has been fetched from yfinance or not 
-
-'''def save_data_to_pickle(data, file_name):
+def save_data_to_pickle(data, file_name):
     try:
         with open(file_name, 'wb') as f:
             pickle.dump(data, f)
@@ -33,32 +30,47 @@ def load_data_from_pickle(file_name):
         return data
     except Exception as e:
         print(f"Error loading data from pickle: {e}")
-        return None '''
-'''def fetch_data_from_yfin(assets,start_date='2014-01-01'):
-    df=pd.DataFrame()
-    end_date=datetime.now().strftime('%Y-%m-%d')
-    for stock in assets:
-        df[stock]=yf.download(stock, start=start_date, end=end_date, interval='1d')['Adj Close']
-    return df''' 
-@cache.memoize()
-def get_data(tickers,start_date='2014-01-01'):
-    #get data, fetching from yf if not in cache.
+        return None
+
+def get_data(tickers, start_date='2014-01-01'):
     try:
-        data=yf.download(tickers,start=start_date)['Adj Close']
+        data = yf.download(tickers, start=start_date)['Adj Close']
         print("Data successfully fetched from yfinance")
         return data
     except Exception as e:
-        print(f'error fetching data from yfinance:{e}')
-        return None
+        print(f"Error fetching data from yfinance: {e}")
+        return None 
+'''
+def get_data(assets,start_date='2014-01-01'):
+    df=pd.DataFrame()
+    yf.pdr_override()
+    end_date=datetime.now().strftime('%Y-%m-%d')
+    for stock in assets:
+        df[stock] = yf.download(stock, start=start_date, end=end_date, interval='1d')['Adj Close']
+    return df '''
 
-#def get_data(assets,start_date='2014-01-01'):
-    #df=pd.DataFrame()
-    #yf.pdr_override()
-    #end_date=datetime.now().strftime('%Y-%m-%d')
-    #for stock in assets:
-        #df[stock] = yf.download(stock, start=start_date, end=end_date, interval='1d')['Adj Close']
+def load_or_fetch_data(assets, start_date='2014-01-01'):
+    global data_fetched
+    #Load data from a pickle file if available and up-to-date.
+    #Fetch from yfinance if the data is missing or needs to be updated.
+    #"""
+    if os.path.exists(PICKLE_FILE)and data_fetched:
+        print("Loading data from pickle file...")
+        data = load_data_from_pickle(PICKLE_FILE)
+        if data is not None:
+            # Check if all requested assets are present
+            missing_assets = [asset for asset in assets if asset not in data.columns]
+            if not missing_assets:
+                print("All requested assets are present in the pickle file.")
+                return data
+            else:
+                print(f"Missing assets in pickle file: {missing_assets}")
 
-
+    print("Fetching data from yfinance...")
+    data = get_data(assets, start_date)
+    if data is not None:
+        save_data_to_pickle(data, PICKLE_FILE)
+    return data        
 
 def optimize_portfolio(df,tickers):
     num_of_portfolios = 5000
@@ -157,9 +169,7 @@ def optimise_port():
     ticker = str(data['Symbols'])
     ticker = remove_spaces(ticker)
     assets = ticker.split(',')
-    start_date=data.get('start_date','2014-01-01')
-    #get data 
-    df = get_data(tuple(assets),start_date)
+    df = get_data(assets)
     sim_no = data.get('sim_no', 1000)
 
     # Monte Carlo Simulation
