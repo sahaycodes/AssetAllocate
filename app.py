@@ -1,11 +1,8 @@
 from flask import Flask, request, jsonify
 import yfinance as yf
-from pandas_datareader import data as web
 import pandas as pd
 import numpy as np
 import re
-from sklearn.cluster import KMeans
-from sklearn.neighbors import KNeighborsClassifier
 import plotly.express as px
 from datetime import datetime
 import math
@@ -13,7 +10,7 @@ import math
 app = Flask(__name__)
 
 
-def get_data(assets,start_date):
+def get_data(assets,start_date='2014-01-01'):
     df = pd.DataFrame()
     yf.pdr_override()
     end_date = datetime.now()
@@ -21,24 +18,23 @@ def get_data(assets,start_date):
         df[stock] = yf.download(stock, start=start_date, end=end_date.strftime('%Y-%m-%d'), interval='1d')['Adj Close']
     return df
 
-def optimize_portfolio(df):
+def optimize_portfolio(df,tickers):
     num_of_portfolios = 6000
-    sim_df = monte_carlo_simulation(df, num_of_portfolios)
-    print(sim_df.head(1),sim_df.keys())
+    sim_df = monteCarlo(df,tickers ,num_of_portfolios)
+
     sim_df['Volatility'] = sim_df['Volatility'].round(2)
     idx = sim_df.groupby('Volatility')['Returns'].idxmax()
     max_df = sim_df.loc[idx].reset_index(drop=True)
     max_df = max_df.sort_values(by='Volatility').reset_index(drop=True)
-    max_df['Weights'] = max_df['Weights'].apply(lambda x: {col: weight for col, weight in zip(df.columns, x)})
+    max_df['Weights'] = max_df['Weights'].apply(lambda x: {ticker: weight for ticker, weight in zip(tickers, x)})
     max_df = max_df.to_dict(orient='records')
 
     # Selecting the portfolio with the highest Sharpe Ratio
     max_returns = sim_df.loc[sim_df['Returns'].idxmax()]
     optimal_weights = max_returns['Weights']
-    print(optimal_weights)
-    print(df.columns)
     # Creating DataFrame for weights
-    weights_df = pd.DataFrame(optimal_weights, index=df.columns, columns=['Weights'])
+    weights_df = pd.DataFrame(optimal_weights, columns=['Weights'])
+    weights_df.index = tickers  # Assign tickers as index
 
     # Expected annual return, volatility, and Sharpe ratio
     mean_returns = df.pct_change(fill_method=None).mean()
@@ -50,30 +46,35 @@ def optimize_portfolio(df):
     # print("done")
     return weights_df, annual_return, port_volatility, sharpe_ratio, max_df
 
-def monte_carlo_simulation(df, num_portfolios=100, risk_free_rate=0.02):
-    returns = df.pct_change(fill_method=None).dropna()
-    mean_returns = returns.mean()
-    cov_matrix = returns.cov()
-    results = np.zeros((4, num_portfolios))
-    weights_record = []
+def monteCarlo(df,assets,num_of_portfolios=100):
+    log_returns = np.log(1 + df.pct_change())
 
-    for i in range(num_portfolios):
-        weights = np.random.random(len(df.columns))
-        weights /= np.sum(weights)
-        weights_record.append(weights)
+    monte_df = all_weights = np.zeros((num_of_portfolios, len(assets)))
 
-        portfolio_return = np.sum(mean_returns * weights) * 252
-        portfolio_std_dev = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))) * np.sqrt(252)
+    ret_arr = np.zeros(num_of_portfolios)
+    vol_arr = np.zeros(num_of_portfolios)
+    sharpe_arr = np.zeros(num_of_portfolios)
 
-        results[0, i] = portfolio_return * 100
-        results[1, i] = portfolio_std_dev
-        results[2, i] = (portfolio_return - risk_free_rate) / portfolio_std_dev  # Sharpe Ratio
+    for i in range(num_of_portfolios):
+        monte_weights = np.random.random(len(assets))
+        monte_weights = monte_weights / np.sum(monte_weights)
 
-    results[3] = np.arange(1, num_portfolios + 1)
-    sim_df = pd.DataFrame(results.T, columns=['Returns', 'Volatility', 'Sharpe Ratio', 'Portfolio'])
-    sim_df['Weights'] = weights_record
+        all_weights[i, :] = monte_weights
 
-    return sim_df
+        portfolio_return = np.sum((log_returns.mean() * monte_weights) * 252)
+        portfolio_std_dev = np.sqrt(np.dot(monte_weights.T, np.dot(log_returns.cov() * 252, monte_weights)))
+
+        ret_arr[i] = portfolio_return * 100
+        vol_arr[i] = portfolio_std_dev
+        sharpe_arr[i] = portfolio_return / portfolio_std_dev
+
+    simulations_data = [ret_arr, vol_arr, sharpe_arr, all_weights]
+    simulations_df = pd.DataFrame(data=simulations_data).T
+    simulations_df.columns = ["Returns", "Volatility", "Sharpe Ratio", "Weights"]
+
+    simulations_df = simulations_df.infer_objects()
+
+    return simulations_df
 
 
 def allocation_strategy(centroids, age, min_age=18, max_age=65):
@@ -119,20 +120,21 @@ def optimise_port():
 
     # Monte Carlo Simulation
     num_of_portfolios = sim_no
-    sim_df = monte_carlo_simulation(df, num_of_portfolios)
+    sim_df = monteCarlo(df,assets ,num_of_portfolios)
     sim_df['Volatility'] = sim_df['Volatility'].round(2)
     idx = sim_df.groupby('Volatility')['Returns'].idxmax()
     max_df = sim_df.loc[idx].reset_index(drop=True)
     max_df = max_df.sort_values(by='Volatility').reset_index(drop=True)
-    max_df['Weights'] = max_df['Weights'].apply(lambda x: {col: weight for col, weight in zip(df.columns, x)})
+    max_df['Weights'] = max_df['Weights'].apply(lambda x: {ticker: weight for ticker, weight in zip(assets, x)})
     max_df = max_df.to_dict(orient='records')
 
     # Selecting the portfolio with the highest Sharpe Ratio
     max_returns = sim_df.loc[sim_df['Returns'].idxmax()]
     optimal_weights = max_returns['Weights']
 
+    weights_df = pd.DataFrame(optimal_weights, columns=['Weights'])
     # Creating DataFrame for weights
-    weights_df = pd.DataFrame(optimal_weights, index=df.columns, columns=['Weights'])
+    weights_df.index = assets  # Assign tickers as index
     weights_dict = weights_df.to_dict()
 
     # Expected annual return, volatility, and Sharpe ratio
@@ -207,7 +209,6 @@ def optimize():
 
     probability_input = np.array([[expected_annual_roi, expected_volatility]])
     probabilities = calculate_probabilities(probability_input, centroids)
-    print(probabilities)
     weighted_amounts =  probabilities * principal_amount
     risk_based_weights = pd.DataFrame({'Weight': weighted_amounts})
     high_risk_weight, medium_risk_weight, low_risk_weight, underage, overage = allocation_strategy(centroids, age)
@@ -249,8 +250,7 @@ def optimize():
         # print(df)
         # print(ticker)
         starting_amount = row['Weights']
-        weights_allocated, annual_return, port_volatility, sharpe_ratio, max_df = optimize_portfolio(df)
-        print(weights_allocated)
+        weights_allocated, annual_return, port_volatility, sharpe_ratio, max_df = optimize_portfolio(df,assets)
         # print("1")
         # print(weights_allocated)
         del df
