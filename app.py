@@ -19,7 +19,7 @@ def get_data(assets,start_date='2014-01-01'):
     return df
 
 def optimize_portfolio(df,tickers):
-    num_of_portfolios = 6000
+    num_of_portfolios = 5000
     sim_df = monteCarlo(df,tickers ,num_of_portfolios)
 
     sim_df['Volatility'] = sim_df['Volatility'].round(2)
